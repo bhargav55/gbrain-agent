@@ -31,6 +31,15 @@ fi
 
 hermes profile use "${PROFILE}"
 
+# Use full path to actual gbrain binary (not the Hermes profile wrapper)
+GBRAIN_BIN="/opt/hermes/.bun/bin/gbrain"
+if [ ! -x "$GBRAIN_BIN" ]; then
+    GBRAIN_BIN="/root/.bun/bin/gbrain"
+fi
+if [ ! -x "$GBRAIN_BIN" ]; then
+    GBRAIN_BIN="$(which gbrain 2>/dev/null || true)"
+fi
+
 # 2. Configure Hermes model + provider
 cat > "${HERMES_HOME}/config.yaml" <<EOF
 model:
@@ -130,10 +139,11 @@ mcp_servers:
       - serve
 EOF
 
-# 3. Write API keys to .env
+# 2. Write API keys to .env
 mkdir -p "${HERMES_HOME}"
 cat > "${HERMES_HOME}/.env" <<EOF
 OPENCODE_GO_API_KEY=${OPENCODE_GO_API_KEY}
+GATEWAY_ALLOW_ALL_USERS=true
 EOF
 
 # 4. Initialize GBrain brain if not already present
@@ -142,11 +152,11 @@ if [ ! -f "${HERMES_HOME}/.gbrain/brain.pglite" ]; then
     mkdir -p "${HERMES_HOME}/.gbrain"
     cd /opt/hermes/gbrain
     # Non-interactive init with PGLite
-    echo "${SEARCH_MODE}" | gbrain init || true
+    echo "${SEARCH_MODE}" | "$GBRAIN_BIN" init || true
     # Configure Ollama embeddings if available locally, otherwise leave default
     if command -v ollama >/dev/null 2>&1; then
-        gbrain config set embedding.provider ollama 2>/dev/null || true
-        gbrain config set embedding.model nomic-embed-text 2>/dev/null || true
+        "$GBRAIN_BIN" config set embedding.provider ollama 2>/dev/null || true
+        "$GBRAIN_BIN" config set embedding.model nomic-embed-text 2>/dev/null || true
     fi
 fi
 
