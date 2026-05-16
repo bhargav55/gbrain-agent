@@ -31,6 +31,15 @@ fi
 
 hermes profile use "${PROFILE}"
 
+# 2b. Overwrite profile config with correct model (default profile clones claude-opus-4.6)
+cat > "${HERMES_HOME}/profiles/${PROFILE}/config.yaml" <<EOF
+model:
+  default: ${MODEL}
+  provider: ${PROVIDER}
+  base_url: ${BASE_URL}
+  api_mode: chat_completions
+EOF
+
 # Use full path to actual gbrain binary (not the Hermes profile wrapper)
 GBRAIN_BIN="/opt/hermes/.bun/bin/gbrain"
 if [ ! -x "$GBRAIN_BIN" ]; then
