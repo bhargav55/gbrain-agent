@@ -6,12 +6,16 @@ set -e
 #   OPENCODE_GO_API_KEY  - for kimi-k2.6
 # Optional overrides:
 #   LLM_MODEL            - default: kimi-k2.6
+#   LLM_PROVIDER         - default: opencode-go
+#   LLM_BASE_URL         - default: https://opencode.ai/zen/go/v1
+#   LLM_API_MODE         - default: chat_completions
 #   HERMES_PROFILE       - default: gbrain
 #   GBRAIN_SEARCH_MODE   - default: balanced
 
 MODEL="${LLM_MODEL:-kimi-k2.6}"
 PROVIDER="${LLM_PROVIDER:-opencode-go}"
 BASE_URL="${LLM_BASE_URL:-https://opencode.ai/zen/go/v1}"
+API_MODE="${LLM_API_MODE:-chat_completions}"
 PROFILE="${HERMES_PROFILE:-gbrain}"
 SEARCH_MODE="${GBRAIN_SEARCH_MODE:-balanced}"
 
@@ -31,13 +35,13 @@ fi
 
 hermes profile use "${PROFILE}"
 
-# 2b. Overwrite profile config with correct model (default profile clones claude-opus-4.6)
+# 2. Overwrite profile config with correct model (default profile clones claude-opus-4.6)
 cat > "${HERMES_HOME}/profiles/${PROFILE}/config.yaml" <<EOF
 model:
   default: ${MODEL}
   provider: ${PROVIDER}
   base_url: ${BASE_URL}
-  api_mode: chat_completions
+  api_mode: ${API_MODE}
 EOF
 
 # Use full path to actual gbrain binary (not the Hermes profile wrapper)
@@ -49,13 +53,13 @@ if [ ! -x "$GBRAIN_BIN" ]; then
     GBRAIN_BIN="$(which gbrain 2>/dev/null || true)"
 fi
 
-# 2. Configure Hermes model + provider
+# 3. Configure Hermes root config
 cat > "${HERMES_HOME}/config.yaml" <<EOF
 model:
   default: ${MODEL}
   provider: ${PROVIDER}
   base_url: ${BASE_URL}
-  api_mode: chat_completions
+  api_mode: ${API_MODE}
 providers: {}
 fallback_providers: []
 credential_pool_strategies: {}
@@ -139,14 +143,14 @@ mcp_servers:
       - serve
 EOF
 
-# 2. Write API keys to .env
+# 4. Write API keys to .env
 mkdir -p "${HERMES_HOME}"
 cat > "${HERMES_HOME}/.env" <<EOF
-OPENCODE_GO_API_KEY=${OPENCODE_GO_API_KEY}
+OPENCODE_GO_API_KEY=${OPEN...KEY}
 GATEWAY_ALLOW_ALL_USERS=true
 EOF
 
-# 4. Initialize GBrain brain if not already present
+# 5. Initialize GBrain brain if not already present
 if [ ! -f "${HERMES_HOME}/.gbrain/brain.pglite" ]; then
     echo "Initializing GBrain..."
     mkdir -p "${HERMES_HOME}/.gbrain"
@@ -160,7 +164,7 @@ if [ ! -f "${HERMES_HOME}/.gbrain/brain.pglite" ]; then
     fi
 fi
 
-# 5. Write SOUL.md for brain-first behavior
+# 6. Write SOUL.md for brain-first behavior
 mkdir -p "${HERMES_HOME}/profiles/${PROFILE}"
 cat > "${HERMES_HOME}/profiles/${PROFILE}/SOUL.md" <<'SOUL'
 # Hermes Agent Persona
@@ -175,7 +179,7 @@ After gathering external info, write it back to the brain.
 Warm, practical, first-principles thinker. Terse directives.
 SOUL
 
-# 6. Start a lightweight health-check HTTP server on PORT (Railway requirement)
+# 7. Start a lightweight health-check HTTP server on PORT (Railway requirement)
 PORT="${PORT:-8080}"
 python3 -m http.server "${PORT}" --bind 0.0.0.0 &
 
