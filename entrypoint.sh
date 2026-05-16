@@ -103,19 +103,10 @@ memory:
   provider: built-in
 gateway:
   enabled: true
-  platforms:
-    telegram:
-      enabled: true
-      bot_token: "${TELEGRAM_BOT_TOKEN}"
-      webhook_url: ""
-      polling: true
-      allowed_usernames: []
-      deny_usernames: []
-  runtime_footer:
-    enabled: false
-    fields:
-    - model
-    - context_pct
+
+telegram:
+  enabled: true
+
 security:
   tirith_enabled: true
 delegation:
