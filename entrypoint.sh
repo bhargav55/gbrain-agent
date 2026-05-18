@@ -9,7 +9,9 @@ set -e
 #   LLM_PROVIDER         - default: opencode-go
 #   LLM_BASE_URL         - default: https://opencode.ai/zen/go/v1
 #   LLM_API_MODE         - default: chat_completions
-#   HERMES_AUTH_JSON_BASE64 - base64-encoded Hermes auth.json for OAuth providers
+#   CODEX_ACCESS_TOKEN  - OpenAI Codex OAuth access token
+#   CODEX_REFRESH_TOKEN - OpenAI Codex OAuth refresh token
+#   HERMES_AUTH_JSON_BASE64 - base64-encoded Hermes auth.json fallback
 #   HERMES_PROFILE       - default: gbrain
 #   GBRAIN_SEARCH_MODE   - default: balanced
 
@@ -146,10 +148,82 @@ EOF
 
 # 4. Write OAuth auth store and API keys to .env
 mkdir -p "${HERMES_HOME}"
-if [ -n "${HERMES_AUTH_JSON_BASE64:-}" ]; then
+if [ -n "${CODEX_ACCESS_TOKEN:-}" ] && [ -n "${CODEX_REFRESH_TOKEN:-}" ]; then
+    echo "Installing Hermes Codex OAuth auth store from Railway token secrets"
+    umask 077
+    python3 - <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+home = Path(os.environ["HERMES_HOME"])
+now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+access_token = os.environ["CODEX_ACCESS_TOKEN"]
+refresh_token = os.environ["CODEX_REFRESH_TOKEN"]
+auth = {
+    "version": 1,
+    "providers": {
+        "openai-codex": {
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+            },
+            "last_refresh": now,
+            "auth_mode": "chatgpt",
+        }
+    },
+    "credential_pool": {
+        "openai-codex": [
+            {
+                "id": "railway-codex",
+                "label": "device_code",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "device_code",
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "last_status": None,
+                "last_status_at": None,
+                "last_error_code": None,
+                "last_error_reason": None,
+                "last_error_message": None,
+                "last_error_reset_at": None,
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "last_refresh": now,
+                "request_count": 0,
+            }
+        ]
+    },
+    "active_provider": "openai-codex",
+    "updated_at": now,
+}
+(home / "auth.json").write_text(json.dumps(auth, indent=2) + "\n")
+PY
+elif [ -n "${HERMES_AUTH_JSON_BASE64:-}" ]; then
     echo "Installing Hermes OAuth auth store from Railway secret"
     umask 077
     printf '%s' "${HERMES_AUTH_JSON_BASE64}" | base64 -d > "${HERMES_HOME}/auth.json"
+fi
+
+if [ "${PROVIDER}" = "openai-codex" ]; then
+    python3 - <<'PY'
+import json
+import sys
+from pathlib import Path
+import os
+
+path = Path(os.environ["HERMES_HOME"]) / "auth.json"
+try:
+    data = json.loads(path.read_text())
+    tokens = data["providers"]["openai-codex"]["tokens"]
+    if not tokens.get("access_token") or not tokens.get("refresh_token"):
+        raise ValueError("missing Codex tokens")
+except Exception as exc:
+    print(f"Missing usable Codex auth store at {path}: {exc}", file=sys.stderr)
+    sys.exit(1)
+print(f"Codex auth store installed at {path}")
+PY
 fi
 
 cat > "${HERMES_HOME}/.env" <<EOF
