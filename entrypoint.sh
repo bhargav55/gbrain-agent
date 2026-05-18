@@ -9,6 +9,7 @@ set -e
 #   LLM_PROVIDER         - default: opencode-go
 #   LLM_BASE_URL         - default: https://opencode.ai/zen/go/v1
 #   LLM_API_MODE         - default: chat_completions
+#   HERMES_AUTH_JSON_BASE64 - base64-encoded Hermes auth.json for OAuth providers
 #   HERMES_PROFILE       - default: gbrain
 #   GBRAIN_SEARCH_MODE   - default: balanced
 
@@ -143,8 +144,14 @@ mcp_servers:
       - serve
 EOF
 
-# 4. Write API keys to .env
+# 4. Write OAuth auth store and API keys to .env
 mkdir -p "${HERMES_HOME}"
+if [ -n "${HERMES_AUTH_JSON_BASE64:-}" ]; then
+    echo "Installing Hermes OAuth auth store from Railway secret"
+    umask 077
+    printf '%s' "${HERMES_AUTH_JSON_BASE64}" | base64 -d > "${HERMES_HOME}/auth.json"
+fi
+
 cat > "${HERMES_HOME}/.env" <<EOF
 OPENCODE_GO_API_KEY=${OPENCODE_GO_API_KEY}
 GATEWAY_ALLOW_ALL_USERS=true
