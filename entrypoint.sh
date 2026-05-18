@@ -151,6 +151,7 @@ mkdir -p "${HERMES_HOME}"
 if [ -n "${CODEX_ACCESS_TOKEN:-}" ] && [ -n "${CODEX_REFRESH_TOKEN:-}" ]; then
     echo "Installing Hermes Codex OAuth auth store from Railway token secrets"
     umask 077
+    export HERMES_ACTIVE_PROFILE="${PROFILE}"
     python3 - <<'PY'
 import json
 import os
@@ -158,6 +159,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 home = Path(os.environ["HERMES_HOME"])
+profile = os.environ.get("HERMES_ACTIVE_PROFILE", "").strip()
 now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 access_token = os.environ["CODEX_ACCESS_TOKEN"]
 refresh_token = os.environ["CODEX_REFRESH_TOKEN"]
@@ -198,7 +200,12 @@ auth = {
     "active_provider": "openai-codex",
     "updated_at": now,
 }
-(home / "auth.json").write_text(json.dumps(auth, indent=2) + "\n")
+payload = json.dumps(auth, indent=2) + "\n"
+(home / "auth.json").write_text(payload)
+if profile:
+    profile_home = home / "profiles" / profile
+    profile_home.mkdir(parents=True, exist_ok=True)
+    (profile_home / "auth.json").write_text(payload)
 PY
 elif [ -n "${HERMES_AUTH_JSON_BASE64:-}" ]; then
     echo "Installing Hermes OAuth auth store from Railway secret"
