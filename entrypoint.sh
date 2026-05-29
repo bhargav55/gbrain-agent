@@ -73,8 +73,11 @@ if [ ! -x "$GBRAIN_BIN" ]; then
 fi
 
 # The Hermes profile wrapper can shadow the real gbrain CLI. Force plain
-# `gbrain` in terminals/scripts to use the persistent GBrain store.
-cat > "/opt/hermes/.local/bin/gbrain" <<'SH'
+# `gbrain` in terminals/scripts to use the persistent GBrain store. Hermes
+# may place profile wrappers under either /opt/hermes or $HOME.
+mkdir -p "/opt/hermes/.local/bin" "${DATA_DIR}/.local/bin"
+for wrapper in "/opt/hermes/.local/bin/gbrain" "${DATA_DIR}/.local/bin/gbrain"; do
+cat > "${wrapper}" <<'SH'
 #!/bin/sh
 if [ -z "${DATA_DIR:-}" ]; then
     DATA_DIR="/data"
@@ -83,7 +86,8 @@ export HOME="${DATA_DIR}"
 export HERMES_HOME="${DATA_DIR}/.hermes"
 exec /opt/hermes/.bun/bin/gbrain "$@"
 SH
-chmod +x "/opt/hermes/.local/bin/gbrain"
+chmod +x "${wrapper}"
+done
 
 # 3. Configure Hermes root config
 cat > "${HERMES_HOME}/config.yaml" <<EOF
