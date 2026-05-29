@@ -9,6 +9,7 @@ set -e
 #   LLM_PROVIDER         - default: opencode-go
 #   LLM_BASE_URL         - default: https://opencode.ai/zen/go/v1
 #   LLM_API_MODE         - default: chat_completions
+#   LLM_REASONING_EFFORT - default: high
 #   CODEX_ACCESS_TOKEN  - OpenAI Codex OAuth access token
 #   CODEX_REFRESH_TOKEN - OpenAI Codex OAuth refresh token
 #   HERMES_AUTH_JSON_BASE64 - base64-encoded Hermes auth.json fallback
@@ -19,10 +20,21 @@ MODEL="${LLM_MODEL:-kimi-k2.6}"
 PROVIDER="${LLM_PROVIDER:-opencode-go}"
 BASE_URL="${LLM_BASE_URL:-https://opencode.ai/zen/go/v1}"
 API_MODE="${LLM_API_MODE:-chat_completions}"
+REASONING_EFFORT="${LLM_REASONING_EFFORT:-high}"
 PROFILE="${HERMES_PROFILE:-gbrain}"
 SEARCH_MODE="${GBRAIN_SEARCH_MODE:-balanced}"
 
-export HERMES_HOME="/opt/hermes/.hermes"
+if [ -z "${DATA_DIR:-}" ]; then
+    DATA_DIR="/data"
+fi
+
+mkdir -p "${DATA_DIR}"
+if [ ! -w "${DATA_DIR}" ]; then
+    echo "DATA_DIR is not writable: ${DATA_DIR}" >&2
+    exit 1
+fi
+export HERMES_HOME="${DATA_DIR}/.hermes"
+export HOME="${DATA_DIR}"
 export PATH="/opt/hermes/.local/bin:${PATH}"
 
 echo "=== GBrain Agent Bootstrap ==="
@@ -55,6 +67,23 @@ fi
 if [ ! -x "$GBRAIN_BIN" ]; then
     GBRAIN_BIN="$(which gbrain 2>/dev/null || true)"
 fi
+if [ ! -x "$GBRAIN_BIN" ]; then
+    echo "Missing gbrain binary" >&2
+    exit 1
+fi
+
+# The Hermes profile wrapper can shadow the real gbrain CLI. Force plain
+# `gbrain` in terminals/scripts to use the persistent GBrain store.
+cat > "/opt/hermes/.local/bin/gbrain" <<'SH'
+#!/bin/sh
+if [ -z "${DATA_DIR:-}" ]; then
+    DATA_DIR="/data"
+fi
+export HOME="${DATA_DIR}"
+export HERMES_HOME="${DATA_DIR}/.hermes"
+exec /opt/hermes/.bun/bin/gbrain "$@"
+SH
+chmod +x "/opt/hermes/.local/bin/gbrain"
 
 # 3. Configure Hermes root config
 cat > "${HERMES_HOME}/config.yaml" <<EOF
@@ -81,7 +110,7 @@ agent:
   image_input_mode: auto
   disabled_toolsets: []
   verbose: false
-  reasoning_effort: medium
+  reasoning_effort: ${REASONING_EFFORT}
 terminal:
   backend: local
   modal_mode: auto
@@ -141,7 +170,11 @@ tts:
   provider: edge
 mcp_servers:
   gbrain:
-    command: gbrain
+    command: ${GBRAIN_BIN}
+    env:
+      DATA_DIR: ${DATA_DIR}
+      HOME: ${DATA_DIR}
+      HERMES_HOME: ${HERMES_HOME}
     args:
       - serve
 EOF
@@ -242,9 +275,11 @@ EOF
 if [ ! -f "${HERMES_HOME}/.gbrain/brain.pglite" ]; then
     echo "Initializing GBrain..."
     mkdir -p "${HERMES_HOME}/.gbrain"
-    cd /opt/hermes/gbrain
-    # Non-interactive init with PGLite
-    echo "${SEARCH_MODE}" | "$GBRAIN_BIN" init || true
+    cd "${HERMES_HOME}"
+    # No embedding provider is configured in this Railway service by default.
+    # Initialize anyway so capture/list/status work; embeddings can be enabled later.
+    "$GBRAIN_BIN" init --pglite --no-embedding
+    "$GBRAIN_BIN" config set search.mode "${SEARCH_MODE}" || true
     # Configure Ollama embeddings if available locally, otherwise leave default
     if command -v ollama >/dev/null 2>&1; then
         "$GBRAIN_BIN" config set embedding.provider ollama 2>/dev/null || true
@@ -252,22 +287,146 @@ if [ ! -f "${HERMES_HOME}/.gbrain/brain.pglite" ]; then
     fi
 fi
 
+# Keep a git-backed brain repo for recovered/imported conversation pages.
+BRAIN_REPO="${DATA_DIR}/brain-repo"
+mkdir -p "${BRAIN_REPO}/conversations"
+cd "${BRAIN_REPO}"
+if [ ! -d .git ]; then
+    git init
+    git config user.email "gbrain-agent@railway.local"
+    git config user.name "gbrain-agent"
+    touch .gitkeep
+    git add .
+    git commit -m "Initialize GBrain repo" || true
+fi
+
+mkdir -p "${HERMES_HOME}/scripts" "${HERMES_HOME}/profiles/${PROFILE}/scripts"
+cat > "${HERMES_HOME}/scripts/gbrain-sync-sessions.sh" <<'SYNC'
+#!/bin/bash
+set -euo pipefail
+export HOME="/opt/hermes"
+if [ -z "${DATA_DIR:-}" ]; then
+    DATA_DIR="/data"
+fi
+export HOME="${DATA_DIR}"
+export HERMES_HOME="${DATA_DIR}/.hermes"
+OUT="${DATA_DIR}/brain-repo/conversations"
+mkdir -p "$OUT"
+
+python3 - <<'PY'
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+import os
+
+data_dir = Path(os.environ.get("DATA_DIR", "/opt/hermes"))
+db = data_dir / ".hermes" / "profiles" / "gbrain" / "state.db"
+out = data_dir / "brain-repo" / "conversations"
+if not db.exists():
+    raise SystemExit(0)
+
+con = sqlite3.connect(db)
+con.row_factory = sqlite3.Row
+sessions = con.execute("select * from sessions order by started_at").fetchall()
+for s in sessions:
+    sid = s["id"]
+    msgs = con.execute(
+        "select role, content, timestamp, tool_name from messages where session_id=? order by timestamp",
+        (sid,),
+    ).fetchall()
+    human = [m for m in msgs if m["role"] in ("user", "assistant") and (m["content"] or "").strip()]
+    if not human:
+        continue
+    started = datetime.fromtimestamp(float(s["started_at"]), tz=timezone.utc).isoformat()
+    title = s["title"] or f"Hermes conversation {sid}"
+    body = [
+        "---",
+        "type: conversation",
+        "source: gbrain-agent",
+        f"session_id: {sid}",
+        f"platform: {s['source'] or ''}",
+        f"model: {s['model'] or ''}",
+        f"started_at: {started}",
+        "---",
+        "",
+        f"# {title}",
+        "",
+    ]
+    for m in human:
+        ts = datetime.fromtimestamp(float(m["timestamp"]), tz=timezone.utc).isoformat()
+        body.extend([f"## {ts} {m['role']}", "", (m["content"] or "").strip(), ""])
+    (out / f"gbrain-agent-{sid}.md").write_text("\n".join(body))
+PY
+
+cd "${DATA_DIR}/brain-repo"
+git add conversations .gitkeep
+git commit -m "Sync Hermes conversations" >/dev/null 2>&1 || true
+gbrain sync --repo "${DATA_DIR}/brain-repo" --no-embed --yes >/dev/null
+SYNC
+chmod +x "${HERMES_HOME}/scripts/gbrain-sync-sessions.sh"
+cp "${HERMES_HOME}/scripts/gbrain-sync-sessions.sh" "${HERMES_HOME}/profiles/${PROFILE}/scripts/gbrain-sync-sessions.sh"
+chmod +x "${HERMES_HOME}/profiles/${PROFILE}/scripts/gbrain-sync-sessions.sh"
+
+cat > "${HERMES_HOME}/scripts/gbrain-dream.sh" <<'DREAM'
+#!/bin/bash
+set -euo pipefail
+export HOME="/opt/hermes"
+if [ -z "${DATA_DIR:-}" ]; then
+    DATA_DIR="/data"
+fi
+export HOME="${DATA_DIR}"
+export HERMES_HOME="${DATA_DIR}/.hermes"
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${ZEROENTROPY_API_KEY:-}" ] && [ -z "${VOYAGE_API_KEY:-}" ]; then
+    echo "Skipping gbrain dream: no GBrain synthesis or embedding API key configured"
+    exit 0
+fi
+gbrain dream --dir "${DATA_DIR}/brain-repo"
+DREAM
+chmod +x "${HERMES_HOME}/scripts/gbrain-dream.sh"
+cp "${HERMES_HOME}/scripts/gbrain-dream.sh" "${HERMES_HOME}/profiles/${PROFILE}/scripts/gbrain-dream.sh"
+chmod +x "${HERMES_HOME}/profiles/${PROFILE}/scripts/gbrain-dream.sh"
+
 # 6. Write SOUL.md for brain-first behavior
 mkdir -p "${HERMES_HOME}/profiles/${PROFILE}"
 cat > "${HERMES_HOME}/profiles/${PROFILE}/SOUL.md" <<'SOUL'
 # Hermes Agent Persona
 
 You are a clairvoyant personal assistant powered by GBrain.
-Before ANY external API call or web search, check GBrain first.
-Use gbrain_query for semantic questions, gbrain_search for keyword lookups,
-and gbrain_get_page for known pages. Cite every fact from the brain.
-If the brain lacks info, say so -- do not hallucinate.
-After gathering external info, write it back to the brain.
+Historical conversations from older Hermes services are restored into GBrain.
+If session_search has no past sessions, do not conclude history is missing.
+Use GBrain MCP search/query/get_page or `gbrain search` for old conversations.
+Before external API calls or web search, check GBrain first when the question
+could depend on prior context. Cite recovered page slugs when using history.
+After gathering durable new info, write it back with GBrain capture/put_page.
 
 Warm, practical, first-principles thinker. Terse directives.
 SOUL
 
-# 7. Start a lightweight health-check HTTP server on PORT (Railway requirement)
+cp "${HERMES_HOME}/profiles/${PROFILE}/SOUL.md" "${HERMES_HOME}/SOUL.md"
+
+# 7. Schedule GBrain maintenance if jobs do not already exist.
+if ! hermes cron list | grep -q "gbrain-session-sync"; then
+    hermes cron create "every 10m" \
+        --name "gbrain-session-sync" \
+        --profile "${PROFILE}" \
+        --script "gbrain-sync-sessions.sh" \
+        --no-agent \
+        --deliver local || true
+fi
+if ! hermes cron list | grep -q "gbrain-dream"; then
+    hermes cron create "0 3 * * *" \
+        --name "gbrain-dream" \
+        --profile "${PROFILE}" \
+        --script "gbrain-dream.sh" \
+        --no-agent \
+        --deliver local || true
+fi
+
+cd /opt/hermes
+
+# 8. Start a lightweight health-check HTTP server on PORT (Railway requirement)
 PORT="${PORT:-8080}"
 python3 -m http.server "${PORT}" --bind 0.0.0.0 &
 

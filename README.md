@@ -35,6 +35,8 @@ railway up
 | `LLM_MODEL` | `kimi-k2.6` | Model identifier |
 | `LLM_PROVIDER` | `opencode-go` | Provider name |
 | `LLM_BASE_URL` | `https://opencode.ai/zen/go/v1` | API base URL |
+| `LLM_API_MODE` | `chat_completions` | Hermes API mode |
+| `LLM_REASONING_EFFORT` | `high` | Reasoning effort for supported models |
 | `HERMES_PROFILE` | `gbrain` | Hermes profile name |
 | `GBRAIN_SEARCH_MODE` | `balanced` | `conservative`, `balanced`, `tokenmax` |
 
@@ -53,8 +55,17 @@ railway up
 
 ## Persistent Storage
 
-The GBrain PGLite database lives in the container filesystem. For production,
-migrate to Supabase:
+The GBrain PGLite database is initialized under `/data/.hermes/.gbrain`.
+The service starts with `--no-embedding` unless you configure an embedding
+provider, so capture/list/status work immediately and semantic embeddings can
+be enabled later.
+
+The service also maintains `/data/brain-repo` as a git-backed GBrain
+source. A Hermes cron job syncs current Hermes sessions into
+`brain-repo/conversations` every 10 minutes and a nightly cron runs
+`gbrain dream`.
+
+For production at larger scale, migrate to Supabase:
 
 ```bash
 gbrain migrate --to supabase

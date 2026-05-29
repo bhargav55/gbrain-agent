@@ -38,6 +38,8 @@ RUN git clone https://github.com/garrytan/gbrain.git /opt/hermes/gbrain && \
 COPY --chown=hermes:hermes entrypoint.sh /opt/hermes/entrypoint.sh
 RUN chmod +x /opt/hermes/entrypoint.sh
 
+USER root
+
 # Railway health check port
 EXPOSE 8080
 
